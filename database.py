@@ -26,6 +26,105 @@ async def init_db(db_path: str | Path = DB_PATH) -> None:
                 PRIMARY KEY (forwarded_msg_id, chat_id)
             )"""
         )
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )"""
+        )
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                url TEXT,
+                position INTEGER DEFAULT 0
+            )"""
+        )
+        await db.commit()
+
+
+async def seed_channels(defaults: list[tuple[str, str]], db_path: str | Path = DB_PATH) -> None:
+    """Seed configured links only when no channel rows exist."""
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute("SELECT COUNT(*) FROM channels") as cursor:
+            row = await cursor.fetchone()
+        if row and row[0] == 0:
+            await db.executemany(
+                "INSERT INTO channels (title, url, position) VALUES (?, ?, ?)",
+                [(title, url, index) for index, (title, url) in enumerate(defaults) if url],
+            )
+            await db.commit()
+
+
+async def seed_settings(defaults: dict[str, str], db_path: str | Path = DB_PATH) -> None:
+    """Insert default settings without overwriting admin-edited values."""
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executemany(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            list(defaults.items()),
+        )
+        await db.commit()
+
+
+async def register_user(user_id: int, language: str = "en", db_path: str | Path = DB_PATH) -> None:
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "INSERT INTO users (user_id, language) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO NOTHING", (user_id, language)
+        )
+        await db.commit()
+
+
+async def get_users(db_path: str | Path = DB_PATH) -> list[int]:
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute("SELECT user_id FROM users ORDER BY user_id") as cursor:
+            return [row[0] async for row in cursor]
+
+
+async def get_setting(key: str, default: str = "", db_path: str | Path = DB_PATH) -> str:
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cursor:
+            row = await cursor.fetchone()
+    return row[0] if row else default
+
+
+async def set_setting(key: str, value: str, db_path: str | Path = DB_PATH) -> None:
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value)
+        )
+        await db.commit()
+
+
+async def list_channels(db_path: str | Path = DB_PATH) -> list[tuple[int, str, str, int]]:
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute(
+            "SELECT id, title, url, position FROM channels ORDER BY position, id"
+        ) as cursor:
+            return [row async for row in cursor]
+
+
+async def add_channel(title: str, url: str, db_path: str | Path = DB_PATH) -> None:
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "INSERT INTO channels (title, url, position) VALUES (?, ?, "
+            "(SELECT COALESCE(MAX(position), -1) + 1 FROM channels))", (title, url)
+        )
+        await db.commit()
+
+
+async def update_channel(channel_id: int, field: str, value: str, db_path: str | Path = DB_PATH) -> None:
+    if field not in {"title", "url"}:
+        raise ValueError("field must be title or url")
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(f"UPDATE channels SET {field} = ? WHERE id = ?", (value, channel_id))
+        await db.commit()
+
+
+async def delete_channel(channel_id: int, db_path: str | Path = DB_PATH) -> None:
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
         await db.commit()
 
 

@@ -8,9 +8,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from config import REPORTS_CHANNEL_ID
-from database import get_language, get_ticket_user, save_ticket, set_language
+from database import (
+    get_language, get_setting, get_ticket_user, list_channels, register_user,
+    save_ticket, set_language,
+)
 from keyboards import (
     bug_platform_keyboard,
+    continue_keyboard,
     language_keyboard,
     main_menu_keyboard,
     wizard_keyboard,
@@ -46,7 +50,10 @@ def _has_media(message: Message) -> bool:
 
 
 async def _show_main(message: Message, language: str) -> None:
-    await message.edit_text(_main_text(language), reply_markup=main_menu_keyboard(language))
+    channels = await list_channels()
+    await message.edit_text(
+        _main_text(language), reply_markup=main_menu_keyboard(language, channels)
+    )
 
 
 async def _prompt(message: Message, state: FSMContext, text: str, language: str) -> None:
@@ -81,11 +88,11 @@ async def _post_anonymous_report(
 @router.message(F.text.startswith("/language"))
 async def start_or_language(message: Message, state: FSMContext) -> None:
     await state.clear()
-    saved = await get_language(message.from_user.id)
+    await register_user(message.from_user.id)
     await message.answer(
         "<b>اختر اللغة / Choose your language</b>",
         reply_to_message_id=message.message_id,
-        reply_markup=language_keyboard(show_back=bool(saved), back_language=saved or "en"),
+        reply_markup=language_keyboard(show_back=False),
     )
 
 
@@ -97,6 +104,16 @@ async def choose_language(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await state.clear()
     await set_language(callback.from_user.id, language)
+    await register_user(callback.from_user.id, language)
+    await callback.answer()
+    welcome = await get_setting(f"welcome_{language}", TEXTS[language]["welcome"])
+    await callback.message.edit_text(escape(welcome), reply_markup=continue_keyboard(language))
+
+
+@router.callback_query(F.data == "nav:continue")
+async def continue_to_main(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    language = await get_language(callback.from_user.id) or "en"
     await callback.answer()
     await _show_main(callback.message, language)
 

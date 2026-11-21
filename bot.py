@@ -5,14 +5,16 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, MenuButtonCommands
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from config import BOT_TOKEN
-from database import init_db
+from admin_handlers import router as admin_router
+from config import BOT_TOKEN, LINKS, PROXY_URL
+from database import init_db, seed_channels, seed_settings
 from handlers import router
-from keep_alive import start_keep_alive
+from texts import TEXTS
 
 
 async def main() -> None:
@@ -21,11 +23,20 @@ async def main() -> None:
 
     logging.basicConfig(level=logging.INFO)
     await init_db()
-    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    await seed_channels([(key, value) for key, value in LINKS.items() if value])
+    await seed_settings({
+        "welcome_ar": TEXTS["ar"]["welcome"],
+        "welcome_en": TEXTS["en"]["welcome"],
+    })
+    session = AiohttpSession(proxy=PROXY_URL or None)
+    bot = Bot(
+        BOT_TOKEN,
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
-
-    runner = await start_keep_alive()
+    dp.include_router(admin_router)
     try:
         await bot.set_my_commands(
             [
@@ -36,7 +47,6 @@ async def main() -> None:
         await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
         await dp.start_polling(bot)
     finally:
-        await runner.cleanup()
         await bot.session.close()
 
 

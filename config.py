@@ -20,6 +20,7 @@ def _optional_int(name: str) -> int | None:
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+PROXY_URL = os.getenv("PROXY_URL", "").strip()
 OWNER_IDS = _owner_ids()
 REPORTS_CHANNEL_ID = _optional_int("REPORTS_CHANNEL_ID")
 

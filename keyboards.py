@@ -19,23 +19,29 @@ def language_keyboard(show_back: bool = True, back_language: str = "en") -> Inli
     return builder.as_markup()
 
 
-def main_menu_keyboard(language: str) -> InlineKeyboardMarkup:
+def main_menu_keyboard(language: str, channels: list[tuple[int, str, str, int]] | None = None) -> InlineKeyboardMarkup:
     t = TEXTS[language]["buttons"]
     builder = InlineKeyboardBuilder()
-    for key, text_key in (
-        ("folder_link", "folder"),
-        ("new_updates_link", "updates"),
-        ("rules_guide_link", "rules_guide"),
-        ("polls_link", "polls"),
-    ):
-        url = LINKS.get(key, "")
-        if url:
-            builder.row(InlineKeyboardButton(text=f"{text_key_index(key)} {t[text_key]}", url=url))
-    builder.row(InlineKeyboardButton(text=f"5️⃣ {t['report_bug']}", callback_data="report:bug"))
-    builder.row(InlineKeyboardButton(text=f"6️⃣ {t['confidential_report']}", callback_data="report:confidential"))
-    builder.row(InlineKeyboardButton(text=f"7️⃣ {t['suggestion']}", callback_data="report:suggestion"))
-    builder.row(InlineKeyboardButton(text=f"8️⃣ {t['language']}", callback_data="nav:language"))
+    default_titles = {
+        "folder_link": "folder", "new_updates_link": "updates",
+        "rules_guide_link": "rules_guide", "polls_link": "polls",
+    }
+    for index, (_channel_id, title, url, _position) in enumerate(channels or [], start=1):
+        label = t.get(default_titles.get(title, ""), title)
+        builder.row(InlineKeyboardButton(text=f"{index}️⃣ {label}", url=url))
+    offset = len(channels or [])
+    builder.row(InlineKeyboardButton(text=f"{offset + 1}️⃣ {t['report_bug']}", callback_data="report:bug"))
+    builder.row(InlineKeyboardButton(text=f"{offset + 2}️⃣ {t['confidential_report']}", callback_data="report:confidential"))
+    builder.row(InlineKeyboardButton(text=f"{offset + 3}️⃣ {t['suggestion']}", callback_data="report:suggestion"))
+    builder.row(InlineKeyboardButton(text=f"{offset + 4}️⃣ {t['language']}", callback_data="nav:language"))
     return builder.as_markup()
+
+
+def continue_keyboard(language: str) -> InlineKeyboardMarkup:
+    label = "إكمال" if language == "ar" else "Continue"
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=label, callback_data="nav:continue")
+    ]])
 
 
 def text_key_index(key: str) -> str:
