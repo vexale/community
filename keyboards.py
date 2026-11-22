@@ -26,17 +26,15 @@ def main_menu_keyboard(language: str, channels: list[tuple[int, str, str, int]] 
         "folder_link": "folder", "new_updates_link": "updates",
         "rules_guide_link": "rules_guide", "polls_link": "polls",
     }
-    for index, (_channel_id, title, url, _position) in enumerate(channels or [], start=1):
+    for _channel_id, title, url, _position in channels or []:
         label = t.get(default_titles.get(title, ""), title)
-        builder.row(InlineKeyboardButton(text=f"{index}️⃣ {label}", url=url))
-    offset = len(channels or [])
-    for index, (item_id, title, _mode, _url, _order) in enumerate(items or [], start=offset + 1):
-        builder.row(InlineKeyboardButton(text=f"{index}️⃣ {title}", callback_data=f"item:open:{item_id}"))
-    offset += len(items or [])
-    builder.row(InlineKeyboardButton(text=f"{offset + 1}️⃣ {t['report_bug']}", callback_data="report:bug"))
-    builder.row(InlineKeyboardButton(text=f"{offset + 2}️⃣ {t['confidential_report']}", callback_data="report:confidential"))
-    builder.row(InlineKeyboardButton(text=f"{offset + 3}️⃣ {t['suggestion']}", callback_data="report:suggestion"))
-    builder.row(InlineKeyboardButton(text=f"{offset + 4}️⃣ {t['language']}", callback_data="nav:language"))
+        builder.row(InlineKeyboardButton(text=label, url=url))
+    for item_id, title, _mode, _url, _order in items or []:
+        builder.row(InlineKeyboardButton(text=title, callback_data=f"item:open:{item_id}"))
+    builder.row(InlineKeyboardButton(text=t['report_bug'], callback_data="report:bug"))
+    builder.row(InlineKeyboardButton(text=t['confidential_report'], callback_data="report:confidential"))
+    builder.row(InlineKeyboardButton(text=t['suggestion'], callback_data="report:suggestion"))
+    builder.row(InlineKeyboardButton(text=t['language'], callback_data="nav:language"))
     return builder.as_markup()
 
 
@@ -49,10 +47,10 @@ def continue_keyboard(language: str) -> InlineKeyboardMarkup:
 
 def text_key_index(key: str) -> str:
     return {
-        "folder_link": "1️⃣",
-        "new_updates_link": "2️⃣",
-        "rules_guide_link": "3️⃣",
-        "polls_link": "4️⃣",
+        "folder_link": "",
+        "new_updates_link": "",
+        "rules_guide_link": "",
+        "polls_link": "",
     }[key]
 
 
