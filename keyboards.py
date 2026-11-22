@@ -19,7 +19,7 @@ def language_keyboard(show_back: bool = True, back_language: str = "en") -> Inli
     return builder.as_markup()
 
 
-def main_menu_keyboard(language: str, channels: list[tuple[int, str, str, int]] | None = None) -> InlineKeyboardMarkup:
+def main_menu_keyboard(language: str, channels: list[tuple[int, str, str, int]] | None = None, items: list[tuple[int, str, str, str | None, int]] | None = None) -> InlineKeyboardMarkup:
     t = TEXTS[language]["buttons"]
     builder = InlineKeyboardBuilder()
     default_titles = {
@@ -30,6 +30,9 @@ def main_menu_keyboard(language: str, channels: list[tuple[int, str, str, int]] 
         label = t.get(default_titles.get(title, ""), title)
         builder.row(InlineKeyboardButton(text=f"{index}️⃣ {label}", url=url))
     offset = len(channels or [])
+    for index, (item_id, title, _mode, _url, _order) in enumerate(items or [], start=offset + 1):
+        builder.row(InlineKeyboardButton(text=f"{index}️⃣ {title}", callback_data=f"item:open:{item_id}"))
+    offset += len(items or [])
     builder.row(InlineKeyboardButton(text=f"{offset + 1}️⃣ {t['report_bug']}", callback_data="report:bug"))
     builder.row(InlineKeyboardButton(text=f"{offset + 2}️⃣ {t['confidential_report']}", callback_data="report:confidential"))
     builder.row(InlineKeyboardButton(text=f"{offset + 3}️⃣ {t['suggestion']}", callback_data="report:suggestion"))

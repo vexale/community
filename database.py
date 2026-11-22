@@ -37,7 +37,31 @@ async def init_db(db_path: str | Path = DB_PATH) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT,
                 url TEXT,
-                position INTEGER DEFAULT 0
+                position INTEGER DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+        async with db.execute("PRAGMA table_info(channels)") as cursor:
+            channel_columns = {row[1] async for row in cursor}
+        if "sort_order" not in channel_columns:
+            await db.execute("ALTER TABLE channels ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            await db.execute("UPDATE channels SET sort_order = COALESCE(position, 0)")
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS custom_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK(mode IN ('direct', 'branches')),
+                direct_url TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS custom_branches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL REFERENCES custom_items(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0
             )"""
         )
         await db.commit()
@@ -50,8 +74,8 @@ async def seed_channels(defaults: list[tuple[str, str]], db_path: str | Path = D
             row = await cursor.fetchone()
         if row and row[0] == 0:
             await db.executemany(
-                "INSERT INTO channels (title, url, position) VALUES (?, ?, ?)",
-                [(title, url, index) for index, (title, url) in enumerate(defaults) if url],
+                "INSERT INTO channels (title, url, position, sort_order) VALUES (?, ?, ?, ?)",
+                [(title, url, index, index) for index, (title, url) in enumerate(defaults) if url],
             )
             await db.commit()
 
@@ -100,7 +124,7 @@ async def set_setting(key: str, value: str, db_path: str | Path = DB_PATH) -> No
 async def list_channels(db_path: str | Path = DB_PATH) -> list[tuple[int, str, str, int]]:
     async with aiosqlite.connect(str(db_path)) as db:
         async with db.execute(
-            "SELECT id, title, url, position FROM channels ORDER BY position, id"
+            "SELECT id, title, url, sort_order FROM channels ORDER BY sort_order, id"
         ) as cursor:
             return [row async for row in cursor]
 
@@ -108,8 +132,9 @@ async def list_channels(db_path: str | Path = DB_PATH) -> list[tuple[int, str, s
 async def add_channel(title: str, url: str, db_path: str | Path = DB_PATH) -> None:
     async with aiosqlite.connect(str(db_path)) as db:
         await db.execute(
-            "INSERT INTO channels (title, url, position) VALUES (?, ?, "
-            "(SELECT COALESCE(MAX(position), -1) + 1 FROM channels))", (title, url)
+            "INSERT INTO channels (title, url, position, sort_order) VALUES (?, ?, "
+            "(SELECT COALESCE(MAX(sort_order), -1) + 1 FROM channels), "
+            "(SELECT COALESCE(MAX(sort_order), -1) + 1 FROM channels))", (title, url)
         )
         await db.commit()
 
@@ -126,6 +151,93 @@ async def delete_channel(channel_id: int, db_path: str | Path = DB_PATH) -> None
     async with aiosqlite.connect(str(db_path)) as db:
         await db.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
         await db.commit()
+
+
+async def list_custom_items(db_path: str | Path = DB_PATH):
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute("SELECT id, title, mode, direct_url, sort_order FROM custom_items ORDER BY sort_order, id") as cursor:
+            return [row async for row in cursor]
+
+
+async def get_custom_item(item_id: int, db_path: str | Path = DB_PATH):
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute("SELECT id, title, mode, direct_url, sort_order FROM custom_items WHERE id = ?", (item_id,)) as cursor:
+            return await cursor.fetchone()
+
+
+async def add_custom_item(title: str, mode: str, direct_url: str | None = None, db_path: str | Path = DB_PATH) -> int:
+    if mode not in {"direct", "branches"}:
+        raise ValueError("mode must be direct or branches")
+    async with aiosqlite.connect(str(db_path)) as db:
+        cursor = await db.execute("INSERT INTO custom_items(title, mode, direct_url, sort_order) VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM custom_items))", (title, mode, direct_url))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def update_custom_item(item_id: int, field: str, value: str | None, db_path: str | Path = DB_PATH) -> None:
+    if field not in {"title", "direct_url"}:
+        raise ValueError("unsupported custom item field")
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(f"UPDATE custom_items SET {field} = ? WHERE id = ?", (value, item_id))
+        await db.commit()
+
+
+async def delete_custom_item(item_id: int, db_path: str | Path = DB_PATH) -> None:
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute("DELETE FROM custom_items WHERE id = ?", (item_id,))
+        await db.commit()
+
+
+async def list_custom_branches(item_id: int, db_path: str | Path = DB_PATH):
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute("SELECT id, item_id, title, url, sort_order FROM custom_branches WHERE item_id = ? ORDER BY sort_order, id", (item_id,)) as cursor:
+            return [row async for row in cursor]
+
+
+async def add_custom_branch(item_id: int, title: str, url: str, db_path: str | Path = DB_PATH) -> None:
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute("INSERT INTO custom_branches(item_id, title, url, sort_order) VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM custom_branches WHERE item_id = ?))", (item_id, title, url, item_id))
+        await db.commit()
+
+
+async def update_custom_branch(branch_id: int, field: str, value: str, db_path: str | Path = DB_PATH) -> None:
+    if field not in {"title", "url"}:
+        raise ValueError("unsupported branch field")
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(f"UPDATE custom_branches SET {field} = ? WHERE id = ?", (value, branch_id))
+        await db.commit()
+
+
+async def delete_custom_branch(branch_id: int, db_path: str | Path = DB_PATH) -> None:
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute("DELETE FROM custom_branches WHERE id = ?", (branch_id,))
+        await db.commit()
+
+
+async def move_order(table: str, row_id: int, direction: str, parent_id: int | None = None, db_path: str | Path = DB_PATH) -> bool:
+    specs = {"channels": ("channels", None), "items": ("custom_items", None), "branches": ("custom_branches", "item_id")}
+    if table not in specs or direction not in {"up", "down"}:
+        raise ValueError("invalid reorder request")
+    table_name, parent_column = specs[table]
+    condition = f"{parent_column} = ?" if parent_column else "1 = 1"
+    params = (parent_id,) if parent_column else ()
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute(f"SELECT id, sort_order FROM {table_name} WHERE {condition} ORDER BY sort_order, id", params) as cursor:
+            rows = await cursor.fetchall()
+        index = next((i for i, row in enumerate(rows) if row[0] == row_id), None)
+        neighbor = None if index is None else index + (-1 if direction == "up" else 1)
+        if neighbor is None or neighbor < 0 or neighbor >= len(rows):
+            return False
+        reordered = list(rows)
+        reordered[index], reordered[neighbor] = reordered[neighbor], reordered[index]
+        await db.execute("BEGIN IMMEDIATE")
+        await db.executemany(
+            f"UPDATE {table_name} SET sort_order = ? WHERE id = ?",
+            [(order, row[0]) for order, row in enumerate(reordered)],
+        )
+        await db.commit()
+        return True
 
 
 async def get_language(user_id: int, db_path: str | Path = DB_PATH) -> str | None:

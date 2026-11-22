@@ -5,12 +5,12 @@ from html import escape
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import REPORTS_CHANNEL_ID
 from database import (
-    get_language, get_setting, get_ticket_user, list_channels, register_user,
-    save_ticket, set_language,
+    get_custom_item, get_language, get_setting, get_ticket_user, list_channels,
+    list_custom_branches, list_custom_items, register_user, save_ticket, set_language,
 )
 from keyboards import (
     bug_platform_keyboard,
@@ -51,8 +51,9 @@ def _has_media(message: Message) -> bool:
 
 async def _show_main(message: Message, language: str) -> None:
     channels = await list_channels()
+    items = await list_custom_items()
     await message.edit_text(
-        _main_text(language), reply_markup=main_menu_keyboard(language, channels)
+        _main_text(language), reply_markup=main_menu_keyboard(language, channels, items)
     )
 
 
@@ -135,6 +136,27 @@ async def go_main(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language(callback.from_user.id) or "en"
     await callback.answer()
     await _show_main(callback.message, language)
+
+
+@router.callback_query(F.data.startswith("item:open:"))
+async def open_custom_item(callback: CallbackQuery) -> None:
+    item_id = int(callback.data.rsplit(":", 1)[1])
+    item = await get_custom_item(item_id)
+    language = await get_language(callback.from_user.id) or "en"
+    back = "• رجوع •" if language == "ar" else "• Back •"
+    rows = []
+    if item and item[2] == "direct" and item[3]:
+        rows.append([InlineKeyboardButton(text="فتح الرابط / Open link", url=item[3])])
+    elif item and item[2] == "branches":
+        branches = await list_custom_branches(item_id)
+        rows.extend([[InlineKeyboardButton(text=title, url=url)] for _id, _parent, title, url, _order in branches])
+    rows.append([InlineKeyboardButton(text=back, callback_data="nav:main")])
+    title = escape(item[1]) if item else ("العنصر غير موجود" if language == "ar" else "Item not found")
+    await callback.answer()
+    await callback.message.edit_text(
+        f"<b>{title}</b>" if item else title,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 @router.callback_query(F.data == "report:bug")
