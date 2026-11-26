@@ -1,24 +1,23 @@
 """Flask WSGI adapter for the aiogram 3 community bot.
 
-PythonAnywhere imports ``application`` from its WSGI file. A dedicated asyncio
-thread keeps the aiogram/aiohttp objects on one event loop across WSGI calls.
+Each WSGI request gets its own asyncio loop, Bot, Dispatcher, and aiohttp
+session. The process-wide MemoryStorage preserves FSM state between requests.
 """
 
 import asyncio
+import copy
 import hmac
 import logging
 import os
-import threading
-from concurrent.futures import Future
 from pathlib import Path
-from typing import Any, Coroutine, TypeVar
+from typing import Any, Awaitable, Callable
 
 from dotenv import load_dotenv
 
 # Read local secrets before importing config.py (which reads BOT_TOKEN).
 load_dotenv(Path(__file__).with_name(".env"), override=False)
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
@@ -41,87 +40,66 @@ WEBHOOK_URL = os.getenv(
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 SET_WEBHOOK_SECRET = os.getenv("SET_WEBHOOK_SECRET", "").strip()
 
-T = TypeVar("T")
-_loop = asyncio.new_event_loop()
-_bot: Bot | None = None
-_dp: Dispatcher | None = None
-_initialized = threading.Event()
-_startup_error: BaseException | None = None
+_is_initialized = False
+# MemoryStorage is loop-independent and keeps the multi-step report wizard state
+# across the fresh Dispatcher instances required for each asyncio.run call.
+_fsm_storage = MemoryStorage()
 
 
-def _loop_worker() -> None:
-    asyncio.set_event_loop(_loop)
-    _loop.run_forever()
-
-
-_thread = threading.Thread(target=_loop_worker, name="aiogram-event-loop", daemon=True)
-_thread.start()
-
-
-async def _initialize() -> None:
-    global _bot, _dp
+async def _ensure_initialized() -> None:
+    """Initialize the schema and default rows once per WSGI process."""
+    global _is_initialized
+    if _is_initialized:
+        return
     if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":
         raise RuntimeError("Set BOT_TOKEN in the local .env or PythonAnywhere environment.")
 
-    # Each helper opens and closes its own short-lived SQLite connection.
     await init_db()
     await seed_channels([(key, value) for key, value in LINKS.items() if value])
     await seed_settings({
         "welcome_ar": TEXTS["ar"]["welcome"],
         "welcome_en": TEXTS["en"]["welcome"],
     })
+    _is_initialized = True
 
+
+def _copy_router(source: Router) -> Router:
+    """Make a fresh router tree so it can be attached to each new Dispatcher."""
+    return copy.deepcopy(source)
+
+
+async def _with_bot(
+    operation: Callable[..., Awaitable[Any]], *args: Any
+) -> Any:
+    """Run a bot operation with resources bound to this asyncio event loop."""
+    await _ensure_initialized()
     session = AiohttpSession(proxy=PROXY_URL or None)
-    _bot = Bot(
-        BOT_TOKEN,
-        session=session,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    _dp = Dispatcher(storage=MemoryStorage())
-    _dp.include_router(router)
-    _dp.include_router(admin_router)
-
-
-def _start_once() -> None:
-    global _startup_error
     try:
-        asyncio.run_coroutine_threadsafe(_initialize(), _loop).result(timeout=60)
-    except BaseException as exc:
-        _startup_error = exc
-        logger.exception("Failed to initialize Telegram bot or database")
+        bot = Bot(
+            BOT_TOKEN,
+            session=session,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        dp = Dispatcher(storage=_fsm_storage)
+        dp.include_router(_copy_router(router))
+        dp.include_router(_copy_router(admin_router))
+        return await operation(bot, dp, *args)
     finally:
-        _initialized.set()
+        await session.close()
 
 
-_startup_thread = threading.Thread(target=_start_once, name="bot-initialization", daemon=True)
-_startup_thread.start()
+async def _feed_update(bot: Bot, dp: Dispatcher, payload: dict[str, Any]) -> None:
+    update = Update.model_validate(payload, context={"bot": bot})
+    await dp.feed_update(bot, update)
 
 
-def _run(coro: Coroutine[Any, Any, T]) -> T:
-    if not _initialized.wait(timeout=60):
-        coro.close()
-        raise TimeoutError("Bot initialization did not finish in time")
-    if _startup_error is not None:
-        coro.close()
-        raise RuntimeError("Bot initialization failed") from _startup_error
-    future: Future[T] = asyncio.run_coroutine_threadsafe(coro, _loop)
-    return future.result(timeout=60)
-
-
-async def _process_update(payload: dict[str, Any]) -> None:
-    assert _bot is not None and _dp is not None
-    update = Update.model_validate(payload, context={"bot": _bot})
-    await _dp.feed_update(_bot, update)
-
-
-async def _register_webhook() -> bool:
-    assert _bot is not None
-    await _bot.set_my_commands([
+async def _register_webhook(bot: Bot, _dp: Dispatcher) -> bool:
+    await bot.set_my_commands([
         BotCommand(command="start", description="Start / الرئيسية"),
         BotCommand(command="language", description="Change language / تغيير اللغة"),
     ])
-    await _bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-    return await _bot.set_webhook(
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    return await bot.set_webhook(
         url=WEBHOOK_URL,
         drop_pending_updates=True,
         secret_token=WEBHOOK_SECRET or None,
@@ -134,9 +112,7 @@ application = app
 
 @app.get("/")
 def health_check():
-    if _initialized.is_set() and _startup_error is not None:
-        return jsonify(status="error", detail="Bot initialization failed"), 503
-    return jsonify(status="ok", initialized=_initialized.is_set()), 200
+    return jsonify(status="ok"), 200
 
 
 @app.post("/webhook")
@@ -149,7 +125,7 @@ def telegram_webhook():
     if not isinstance(payload, dict):
         return jsonify(error="Expected a JSON Telegram Update"), 400
     try:
-        _run(_process_update(payload))
+        asyncio.run(_with_bot(_feed_update, payload))
     except Exception:
         logger.exception("Failed to process Telegram update")
         return jsonify(error="Update processing failed"), 500
@@ -167,7 +143,7 @@ def set_webhook():
         return jsonify(error="WEBHOOK_URL must use HTTPS"), 500
 
     try:
-        _run(_register_webhook())
+        asyncio.run(_with_bot(_register_webhook))
     except Exception:
         logger.exception("Telegram setWebhook failed")
         return jsonify(error="Telegram rejected setWebhook"), 502
